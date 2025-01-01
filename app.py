@@ -595,3 +595,4 @@ def make_prediction(stock, progress_callback = None):
         logging.error(f"Error traceback: {traceback.format_exc()}")
         raise
     # return action, probabilities, sentiments, trend, last_close, prediction_today[0][0] if isinstance(prediction_today, (list, np.ndarray)) else prediction_today, headlines
+

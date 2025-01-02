@@ -274,7 +274,7 @@ class StockApp:
         except Exception as e:
             messagebox.showerror("Info Error", f"Failed to retrieve stock info: {str(e)}")
 
-    def update_progress(self, message):
+    def update_progress(self, percentage):
         """
         Update the progress bar and progress message.
 
@@ -282,15 +282,18 @@ class StockApp:
             message (str): The progress message to display.
         """
         # Update progress bar value
-        if message == "Initialization":
-            self.progress["value"] = 0
-        elif message == "Prediction complete":
-            self.progress["value"] = 100
-        else:
-            self.progress["value"] += 10  # Example increment; adjust as needed
+        # if message == "Initialization":
+        #     self.progress["value"] = 0
+        # elif message == "Prediction complete":
+        #     self.progress["value"] = 100
+        # else:
+        #     self.progress["value"] += 10  # Example increment; adjust as needed
 
-        # Update status message
-        self.status_var.set(message)
+        # # Update status message
+        # self.status_var.set(message)
+        self.progress["value"] = percentage
+        self.status_var.set(f"Progress: {percentage:.2f}%")
+        self.root.update_idletasks()
         self.root.update_idletasks()
 
     def clear_results(self):
@@ -561,8 +564,4 @@ class StockApp:
         help_label = ttk.Label(help_tab, text=help_text, wraplength=800, style="TLabel")
         help_label.pack(pady=10)
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = StockApp(root)
-    root.mainloop()
 

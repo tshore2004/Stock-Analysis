@@ -1,6 +1,7 @@
 import logging
 import traceback
 import ta
+import time
 import numpy as np
 import yfinance as yf
 from joblib import Parallel, delayed
@@ -9,10 +10,13 @@ from alpaca_trade_api import REST
 from timedelta import Timedelta
 from newsML import estimate_sentiment
 from lumibot.strategies.strategy import Strategy
-from sklearn.metrics import mean_absolute_error, r2_score
-from sklearn.model_selection import ParameterGrid, KFold
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error, r2_score
+from sklearn.model_selection import  KFold, ParameterSampler, train_test_split
 
 class NeuralNetwork:
+
+    logging.basicConfig(level=logging.WARNING)
+
     def __init__(self, input_size, hidden_size, output_size):              
         """
         Initialize the neural network with given parameters.
@@ -90,9 +94,9 @@ class NeuralNetwork:
         self.z_values = []
         for i, weight in enumerate(self.weights):
             z = np.dot(self.activations[-1], weight) + self.biases[i]
-            print(f"Layer {i} - Z shape:", z.shape)
+            logging.debug(f"Layer {i} - Z shape: {z.shape}")
             a = self.relu(z)
-            print(f"Layer {i} - Activation shape:", a.shape)
+            logging.debug(f"Layer {i} - Activation shape: {a.shape}")
             self.z_values.append(z)
             self.activations.append(a)
         return self.activations[-1]
@@ -109,11 +113,12 @@ class NeuralNetwork:
         y = y.reshape(output.shape)
 
         deltas = [(output - y) * self.relu_derivative(output)]
-        print("Delta output shape:", deltas[-1].shape)
+
+        logging.debug(f"Delta output shape: {deltas[-1].shape}")
 
         for i in range(len(self.hidden_size), 0, -1):
             delta = deltas[-1].dot(self.weights[i].T) * self.relu_derivative(self.activations[i])
-            print(f"Delta shape for layer {i}:", delta.shape)
+            logging.debug(f"Delta shape for layer {i}: {delta.shape}")
             deltas.append(delta)
         
         deltas.reverse()
@@ -121,9 +126,11 @@ class NeuralNetwork:
         for i in range(len(self.weights)):
             delta = np.squeeze(deltas[i])
             activation = np.squeeze(self.activations[i])
-            print(f"Weight shape for layer {i}:", self.weights[i].shape)
-            print(f"Activation shape for layer {i}:", activation.shape)
-            print(f"Delta shape for layer {i}:", delta.shape)
+
+            
+            logging.debug(f"Weight shape for layer {i}: {self.weights[i].shape}")
+            logging.debug(f"Activation shape for layer {i}: {activation.shape}")
+            logging.debug(f"Delta shape for layer {i}: {delta.shape}")
 
             self.weights[i] -= self.activations[i].T.dot(deltas[i]) * learning_rate
             self.biases[i] -= np.sum(deltas[i], axis=0, keepdims=True) * learning_rate
@@ -147,8 +154,9 @@ class NeuralNetwork:
             self.backward(X, y, output, learning_rate)
             if epoch % 100 == 0:
                 loss = np.mean((y - output) ** 2)
-                print(f'Epoch {epoch}, Loss: {loss}')
-                progress_callback((epoch / epochs) * 100)
+                
+                logging.info(f'Epoch {epoch}, Loss: {loss}')
+            progress_callback((epoch / epochs) * 100)
     
     def predict(self, X):
         """
@@ -214,21 +222,6 @@ def create_sequences(data, seq_length):
     Returns:
         tuple: Sequences of input data (X) and corresponding labels (y).
     """
-    # if len(data) <= seq_length:
-    #     raise ValueError(f"Not enough data to create sequences. Data length: {len(data)}, required sequence length: {seq_length}")
-    # X = []
-    # y = []
-    # for i in range(len(data) - seq_length):
-    #     X.append(data[i:i + seq_length])
-    #     y.append(data[i + seq_length, 0])
-
-    # X = np.array(X)
-    # y = np.array(y).reshape(-1, 1)
-
-    # print(f"X shape: {X.shape}, y shape: {y.shape}")
-
-    # return X, y
-
     sequences = []
     labels = []
     for i in range(seq_length, len(data)):
@@ -250,35 +243,22 @@ def prepare_data(stock, start, end):
     """
 
     data = yf.download(stock, start, end)
-    print(f"Initial data shape: {data.shape}")
     data.reset_index(inplace=True)
     data.dropna(inplace=True)
-    print(f"After dropping NaNs: {data.shape}")
 
     data['MA10'] = data['Close'].rolling(window=10).mean()
     data['MA50'] = data['Close'].rolling(window=50).mean()
-    print(f"After adding MA10 and MA50: {data.shape}, NaNs: {data.isna().sum().sum()}")
-
-     # Adding RSI (Relative Strength Index)
     data['RSI'] = ta.momentum.RSIIndicator(data['Close']).rsi()
-    print(f"RSI added, Data shape: {data.shape}, NaNs: {data['RSI'].isna().sum()}")
 
-     # Adding MACD (Moving Average Convergence Divergence)
     macd = ta.trend.MACD(data['Close'])
     data['MACD'] = macd.macd()
     data['MACD_Signal'] = macd.macd_signal()
-    print(f"MACD added, Data shape: {data.shape}, NaNs: {data['MACD'].isna().sum()}, {data['MACD_Signal'].isna().sum()}")
 
-    # Adding Bollinger Bands
     bb = ta.volatility.BollingerBands(data['Close'])
     data['BB_High'] = bb.bollinger_hband()
     data['BB_Low'] = bb.bollinger_lband()
-    print(f"Bollinger Bands added, Data shape: {data.shape}, NaNs: {data['BB_High'].isna().sum()}, {data['BB_Low'].isna().sum()}")
 
     data.dropna(inplace=True)
-    print(f"After dropping NaNs, Data shape: {data.shape}")
-    
-    print(f"Data lengths after dropping NaNs: {[len(data[col]) for col in data.columns]}")
    
     seq_length = 60
     features = ['Close', 'MA10', 'MA50', 'RSI', 'MACD', 'MACD_Signal', 'BB_High', 'BB_Low']
@@ -294,7 +274,6 @@ def prepare_data(stock, start, end):
     normalized_data = nn.normalize(feature_data)   
 
     X, y = create_sequences(normalized_data, seq_length)
-    print(f"X shape: {X.shape}, y shape: {y.shape}")
 
     if X.shape[0] == 0 or y.shape[0] == 0:
         raise ValueError("Not enough data to create sequences. Please check the sequence length or the data length.")
@@ -306,52 +285,55 @@ def prepare_data(stock, start, end):
 
     y_train = y_train.reshape(-1, 1)  # Ensure y is 2D
     y_test = y_test.reshape(-1, 1)
-
-    print(f"X_train shape: {X_train.shape}, y_train shape: {y_train.shape}")
-    print(f"X_test shape: {X_test.shape}, y_test shape: {y_test.shape}")
     
-    # X_train = X_train.reshape((X_train.shape[0], -1))
-    # X_test = X_test.reshape((X_test.shape[0], -1))
-    # y_train = y_train.reshape((y_train.shape[0], 1))
-    # y_test = y_test.reshape((y_test.shape[0], 1))
-
-    # print(f"X_train shape after reshaping: {X_train.shape}")
-    # print(f"X_test shape after reshaping: {X_test.shape}")
-    
-
     return data, X_train, X_test, y_train, y_test, features
 
 def grid_search(X_train, y_train, X_val, y_val, n_splits=5):
-    param_grid = {
+    X_train_small = X_train[:1000]
+    y_train_small = y_train[:1000]
+
+    param_distributions = {
         'hidden_size': [[50], [100]],
-        'learning_rate': [0.01, 0.001],
+        'learning_rate': [0.001, 0.005, 0.01],
         'epochs': [500, 1000]
     }
 
-    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    # Generate random parameter combinations
+    param_sampler = list(ParameterSampler(param_distributions, n_iter=10, random_state=42))
+    def train_with_early_stopping(nn, X, y, val_split, learning_rate, epochs, patience=5):
+        best_loss = float('inf')
+        epochs_without_improvement = 0
+
+        for epoch in range(epochs):
+            output = nn.forward(X)
+            loss = np.mean((y - output) ** 2)
+
+            if loss < best_loss:
+                best_loss = loss
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+
+            if epochs_without_improvement > patience:
+                print(f"Early stopping at epoch {epoch} with loss {best_loss}")
+                break
+
+            nn.backward(X, y, output, learning_rate)
+
+        return best_loss
 
     def evaluate_params(params):
-        fold_scores = []
-
-        for train_index, val_index in kf.split(X_train):
-            X_train_fold, X_val_fold = X_train[train_index], X_train[val_index]
-            y_train_fold, y_val_fold = y_train[train_index], y_train[val_index]
-
-            try:
-                nn = NeuralNetwork(input_size=X_train.shape[1:], hidden_size=params['hidden_size'], output_size=1)
-                nn.train(X_train_fold, y_train_fold, params['epochs'], params['learning_rate'], None)
-                
-                predictions = nn.predict(X_val_fold)
-                loss = np.mean((y_val_fold - predictions) ** 2)
-                fold_scores.append(loss)
-            except Exception as e:
-                print(f"Error with params {params}: {e}")
-                return np.inf, params  # Return a high loss for failed configurations
-
-        avg_loss = np.mean(fold_scores)
-        return avg_loss, params
-
-    results = Parallel(n_jobs=-1)(delayed(evaluate_params)(params) for params in ParameterGrid(param_grid))
+        try:
+            nn = NeuralNetwork(input_size=X_train.shape[1:], hidden_size=params['hidden_size'], output_size=1)
+            val_split = train_test_split(np.arange(X_train_small.shape[0]), test_size=.2, random_state=42)
+            loss = train_with_early_stopping(nn, X_train_small, y_train_small, val_split, params['learning_rate'], params['epochs'], patience=5)
+            return loss, params
+        except Exception as e:
+            print(f"Error with params {params}: {e}")
+            return np.inf, params
+        
+    
+    results = Parallel(n_jobs=-1)(delayed(evaluate_params)(params) for params in param_sampler)
     
     best_score, best_params = min(results, key=lambda x: x[0])
     
@@ -384,6 +366,9 @@ def train_neural_network(X, y, hidden_size, learning_rate, epochs, n_splits = 5,
     output_size = 1
     nn = NeuralNetwork(input_size, hidden_size, output_size)
     
+    total_iterations = n_splits * epochs
+    current_iteration = 0
+
     for fold, (train_index, val_index) in enumerate(kf.split(X)):
         X_train_fold, X_val_fold = X[train_index], X[val_index]
         y_train_fold, y_val_fold = y[train_index], y[val_index]
@@ -391,18 +376,19 @@ def train_neural_network(X, y, hidden_size, learning_rate, epochs, n_splits = 5,
        
         for epoch in range(epochs):
             output = nn.forward(X_train_fold)
-            print(f"Output shape: {output.shape}")
             nn.backward(X_train_fold, y_train_fold, output, learning_rate)
 
             if epoch % 100 == 0:
                 loss = np.mean((y_train_fold - output) ** 2)
-                print(f'Epoch {epoch}, Loss: {loss}')
 
-                if progress_callback:
-                    progress_callback(int((epoch / epochs) * 100))  # Update progress
+            current_iteration += 1
+            progress_percentage = (current_iteration / total_iterations) * 100
+            progress_callback(progress_percentage)
+                # if progress_callback:
+                #     progress_callback(int((epoch / epochs) * 100))  # Update progress
 
-                    if not callable(progress_callback):
-                        raise ValueError("progress_callback must be a callable function")
+                #     if not callable(progress_callback):
+                #         raise ValueError("progress_callback must be a callable function")
     
     return nn
 
@@ -465,6 +451,35 @@ class newsSentiment(Strategy):
         
         return headlines, probabilities, sentiments
 
+def calculate_accuracy_metrics(y_true, y_pred):
+            """
+            Calculate evaluation metrics for regression models.
+
+            Args:
+                y_true (numpy.ndarray): True target values.
+                y_pred (numpy.ndarray): Predicted values.
+
+            Returns:
+                dict: Dictionary containing calculated metrics.
+            """
+            metrics = {}
+
+            # Mean Absolute Percentage Error (MAPE)
+            metrics['MAPE'] = mean_absolute_percentage_error(y_true, y_pred) * 100  # Expressed as percentage
+
+            # Root Mean Squared Error (RMSE)
+            metrics['RMSE'] = np.sqrt(mean_squared_error(y_true, y_pred))
+
+            # R² Score
+            metrics['R2'] = r2_score(y_true, y_pred)
+
+            # Custom Accuracy Metric: Percentage of Predictions Within a Tolerance
+            tolerance = 0.10  # 10% tolerance
+            within_tolerance = np.abs((y_true - y_pred) / y_true) <= tolerance
+            metrics['Accuracy_Percentage'] = np.mean(within_tolerance) * 100
+
+            return metrics
+
 def make_prediction(stock, progress_callback = None):
     """
     Make a stock price prediction using neural network and news sentiment.
@@ -480,14 +495,19 @@ def make_prediction(stock, progress_callback = None):
         progress_callback = lambda x: None
 
     logging.info("Starting make_prediction function")
-    
+
+    start_time = time.time()
+
     try:
+        progress_callback(10)
+
         # Data preparation
         logging.info("Preparing data")
         start = '2013-01-01'
         end = date.today()
         data, X_train, X_test, y_train, y_test, features = prepare_data(stock, start, end)
         logging.info(f"Data prepared. Shapes - X_train: {X_train.shape}, X_test: {X_test.shape}")
+        progress_callback(30)
 
         # Grid search
         logging.info("Starting grid search")
@@ -497,6 +517,7 @@ def make_prediction(stock, progress_callback = None):
         y_train, y_val = y_train[:split_index], y_train[split_index:]
         best_params = grid_search(X_train, y_train, X_val, y_val)
         logging.info(f"Best parameters found: {best_params}")
+        progress_callback(50)
 
         # Neural network training
         logging.info("Training neural network")
@@ -516,14 +537,13 @@ def make_prediction(stock, progress_callback = None):
 
         nn_predictions = nn.denormalize(nn_predictions, data[features].values)
         y_test_denormalized = nn.denormalize(y_test, data[features].values)
+        progress_callback(90) 
 
         # Evaluation metrics
-        mse = np.mean((nn_predictions - y_test_denormalized) ** 2)
-        mae = mean_absolute_error(y_test_denormalized, nn_predictions)
-        r2 = r2_score(y_test_denormalized, nn_predictions)
-        logging.info(f'Mean Squared Error: {mse}')
-        logging.info(f'Mean Absolute Error: {mae}')
-        logging.info(f'R² Score: {r2}')
+        metrics = calculate_accuracy_metrics(y_test_denormalized, nn_predictions)
+        for key, value in metrics.items():
+            logging.info(f"{key}: {value:.2f}")
+        accuracy_percentage = metrics['Accuracy_Percentage']
 
         # Today's prediction
         logging.info("Making today's prediction")
@@ -585,14 +605,17 @@ def make_prediction(stock, progress_callback = None):
 
         logging.info(f"Determined trend: {trend}")
         logging.info(f"Determined action: {action}")
-
         logging.info("Prediction process completed successfully")
         
-        # return action, probabilities, sentiments, trend, last_close, float(prediction_today), headlines
-        return action, probabilities, sentiments, trend, last_close, prediction_today, headlines
+        # timing
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"Total time taken: {elapsed_time:.2f} seconds")
+        progress_callback(100) 
+        return action, accuracy_percentage, sentiments, trend, last_close, prediction_today, headlines
+    
     except Exception as e:
         logging.error(f"An error occurred in make_prediction: {str(e)}")
         logging.error(f"Error traceback: {traceback.format_exc()}")
+        progress_callback(100)
         raise
-    # return action, probabilities, sentiments, trend, last_close, prediction_today[0][0] if isinstance(prediction_today, (list, np.ndarray)) else prediction_today, headlines
-
